@@ -35,6 +35,7 @@ def make_csv() -> str:
 CHECK_OK = {
     "success": True,
     "responseTime": 120,
+    "throughput_bps": 180000,
     "colo": "NRT",
     "exit": {
         "ip": "198.51.100.7",
@@ -50,13 +51,15 @@ CHECK_OK = {
 CHECK_FAIL = {"success": False, "error": "sstp handshake timeout"}
 
 
-def build_handler(csv_body: str, payload: dict) -> type[BaseHTTPRequestHandler]:
+def build_handler(csv_body: str, payload: dict, captured: list[str] | None = None) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - http.server 接口
             path = urlsplit(self.path).path
             if path == "/api":
                 body, ctype = csv_body.encode("utf-8"), "text/plain; charset=utf-8"
             elif path == "/check":
+                if captured is not None:
+                    captured.append(urlsplit(self.path).query)
                 body, ctype = json.dumps(payload).encode("utf-8"), "application/json"
             else:
                 self.send_response(404)
@@ -78,8 +81,8 @@ def build_handler(csv_body: str, payload: dict) -> type[BaseHTTPRequestHandler]:
 def server():
     servers: list[HTTPServer] = []
 
-    def start(csv_body: str, payload: dict) -> str:
-        httpd = HTTPServer(("127.0.0.1", 0), build_handler(csv_body, payload))
+    def start(csv_body: str, payload: dict, captured: list[str] | None = None) -> str:
+        httpd = HTTPServer(("127.0.0.1", 0), build_handler(csv_body, payload, captured))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         servers.append(httpd)
         return f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -109,7 +112,8 @@ def prepare_env(monkeypatch, base: str, public_dir, **extra):
 
 
 def test_main_generates_all_artifacts(server, monkeypatch, tmp_path):
-    base = server(make_csv(), CHECK_OK)
+    captured: list[str] = []
+    base = server(make_csv(), CHECK_OK, captured)
     prepare_env(monkeypatch, base, tmp_path / "public")
 
     vpngate.main()
@@ -121,7 +125,9 @@ def test_main_generates_all_artifacts(server, monkeypatch, tmp_path):
     assert data["stats"]["success"] == 1
     assert data["countries"]["JP"]["count"] == 1
     assert data["countries"]["JP"]["nodes"][0]["residential"] == "residential"
+    assert data["countries"]["JP"]["nodes"][0]["throughput_bps"] == 180000
     assert data["worker_host"].startswith("127.0.0.1")
+    assert captured and "bytes=262144" in captured[0]
 
     nodes_text = (tmp_path / "public" / "nodes.txt").read_text(encoding="utf-8")
     assert nodes_text.strip() == (

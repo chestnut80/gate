@@ -289,6 +289,7 @@ class Config:
     min_success_ratio: float
     max_residential_per_country: int
     max_datacenter_per_country: int
+    speed_bytes: int = 262144
 
     @classmethod
     def load(cls) -> "Config":
@@ -323,6 +324,7 @@ class Config:
             min_success_ratio=_env_float("MIN_SUCCESS_RATIO", 0.0, minimum=0.0),
             max_residential_per_country=_env_int("MAX_RESIDENTIAL_PER_COUNTRY", 20),
             max_datacenter_per_country=_env_int("MAX_DATACENTER_PER_COUNTRY", 10),
+            speed_bytes=_env_int("SPEED_BYTES", 262144, minimum=0),
         )
 
 
@@ -605,6 +607,7 @@ def check_one(
     session: requests.Session,
     worker_base: str,
     timeout: float,
+    speed_bytes: int = 0,
 ) -> dict[str, Any]:
     result: dict[str, Any] = node.to_dict()
     result.update(
@@ -616,6 +619,7 @@ def check_one(
             "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "exit": None,
             "latency_ms": None,
+            "throughput_bps": None,
             "colo": None,
             "error": None,
             "worker_error": False,
@@ -623,6 +627,8 @@ def check_one(
         }
     )
     url = worker_base + quote(f"{node.host}:{node.port}", safe="")
+    if speed_bytes > 0:
+        url += f"&bytes={speed_bytes}"
     try:
         response = session.get(url, timeout=timeout)
         if response.status_code != 200:
@@ -635,6 +641,7 @@ def check_one(
         result["success"] = success
         result["status"] = "success" if success else "failed"
         result["latency_ms"] = payload.get("responseTime")
+        result["throughput_bps"] = payload.get("throughput_bps")
         result["colo"] = payload.get("colo")
         result["error"] = None if success else (
             payload.get("error") or payload.get("message") or "check failed"
@@ -674,7 +681,9 @@ def check_all(
     deadline = time.monotonic() + cfg.deadline_s
     with ThreadPoolExecutor(max_workers=cfg.concurrency) as pool:
         futures = {
-            pool.submit(check_one, node, session, cfg.worker_base, cfg.check_timeout): node
+            pool.submit(
+                check_one, node, session, cfg.worker_base, cfg.check_timeout, cfg.speed_bytes
+            ): node
             for node in nodes
         }
         pending = set(futures)
